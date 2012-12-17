@@ -1,9 +1,12 @@
 <?php
+
 namespace ci_ext\db;
+
+use ci_ext\utils\VarDumper;
 
 use ci_ext\core\Exception;
 use ci_ext\events\Event;
-
+use ci_ext\validators\Validator;
 /**
  * TableRecord
  * <pre>
@@ -18,8 +21,9 @@ use ci_ext\events\Event;
  * @copyright Copyright &copy; 2006-2012 Hayzone IT LTD.
  * @version $id$
  */
-abstract class Table extends \ci_ext\events\EventDispatcher {
+abstract class Table extends \ci_ext\core\Model {
 	
+	/* 未实现 */
 	const HAS_MANY = '';					// 一对多
 	const HAS_ONE = '';						// 一对一
 	const MANY_MANY = '';					// 多对多
@@ -27,7 +31,8 @@ abstract class Table extends \ci_ext\events\EventDispatcher {
 	
 	const SCENARIO_INSERT = 'insert';		// 插入
 	const SCENARIO_UPDATE = 'update';		// 更新
-
+	
+	/* 未实现 */
 	const CASCADE_ALL = 7;					// 全部级联
 	const CASCADE_DELETE = 4;				// 级联删除
 	const CASCADE_VALIDATE = 2;				// 级联验证
@@ -40,7 +45,11 @@ abstract class Table extends \ci_ext\events\EventDispatcher {
 	private $_related = array();			// 关联数据缓存
 	private $_pk;							// 当前记录主键
 	private $_attributes = array();		// 当前记录的所有属性，包括表字段
-	
+	private $_c;							// 查询条件	
+	private $_errors = array();			// 错误信息
+	private $_validators;					// 验证器
+	public static $_models = array();		// class name => model
+
 	/**
 	 * 根据给定场景实例化一个对象
 	 * @param string $scenario
@@ -51,10 +60,24 @@ abstract class Table extends \ci_ext\events\EventDispatcher {
 		}
 		$this->setScenario($scenario);
 		$this->setIsNewRecord(true);
-		$this->loadDefaultAttributes();
 		$this->init();
 		$this->attachBehaviors($this->behaviors());
 		$this->afterConstruct();
+	}
+	
+	/**
+	 * 使用静态方法实例化
+	 * @param string $className
+	 * @return Table
+	 */
+	public static function model($className=__CLASS__) {
+		if(isset(self::$_models[$className])) {
+			return self::$_models[$className];
+		} else {
+			$model=self::$_models[$className]=new $className(null);
+			$model->attachBehaviors($model->behaviors());
+			return $model;
+		}
 	}
 	
 	/**
@@ -62,17 +85,6 @@ abstract class Table extends \ci_ext\events\EventDispatcher {
 	 * @return void
 	 */
 	public function init() {
-	}
-	
-	/**
-	 * 加载数据库字段到属性中
-	 * @return void
-	 */
-	protected function loadDefaultAttributes() {
-		$fields = $this->getDbConnection()->list_fields($this->tableName());
-		foreach($fields as $f) {
-			$this->_attributes[$f] = '';
-		}
 	}
 	
 	/**
@@ -93,31 +105,16 @@ abstract class Table extends \ci_ext\events\EventDispatcher {
 	}
 	
 	/**
-	 * 设置当前场景
-	 * @param string $scenario
-	 * @return void
-	 */
-	public function setScenario($scenario) {
-		$this->_scenario = $scenario;
-	}
-	
-	/**
-	 * 获取当前场景
-	 * @return string
-	 */
-	public function getScenario() {
-		return $this->_scenario;
-	}
-	
-	/**
 	 * 获取数据库连接
 	 * 如果不存在，就使用$this->load->database()加载数据库
 	 * @return CI_DB_driver
 	 */
 	public function getDbConnection() {
 		if(!$this->_dbConnection) {
-			$this->load->database();
-			$this->setDbConnection($this->db);
+			$ci =& get_instance();
+			$ci->load->database();
+			$ci->db->simple_query("SET NAMES {$ci->db->char_set}"); // PDO::MySQL only
+			$this->setDbConnection($ci->db);
 		}
 		return $this->_dbConnection;
 	}
@@ -138,9 +135,7 @@ abstract class Table extends \ci_ext\events\EventDispatcher {
 	 */
 	public function setAttributes(array $values) {
 		foreach($values as $k=>$v) {
-			if(property_exists($this, $k) || isset($this->_attributes[$k])) {
-				$this->$k = $v;
-			}
+			$this->$k = $v;
 		}
 	}
 	
@@ -150,7 +145,59 @@ abstract class Table extends \ci_ext\events\EventDispatcher {
 	 * @return array
 	 */
 	public function getAttributes($attributes=null) {
-		return $this->_attributes;
+		return is_array($attributes) ? array_intersect($this->_attributes, $attributes) : $this->_attributes;
+	}
+	
+	/**
+	 * 默认的查询条件
+	 * @return array
+	 */
+	public function defaultScope() {
+		return array();
+	}
+	
+	/**
+	 * 查询条件组合
+	 * @return array
+	 */
+	public function scopes() {
+		return array();
+	}
+	
+	/**
+	 * 重置当前条件
+	 * @param boolean $resetDefault
+	 * @return Table
+	 */
+	public function resetScope($resetDefault=true) {
+		if($resetDefault) {
+			$this->_c=new DbCriteria();
+		} else {
+			$this->_c=null;
+		}
+		return $this;
+	}
+	
+	/**
+	 * 获取查询条件
+	 * @param boolean $createIfNull
+	 * @return DbCriteria
+	 */
+	public function getDbCriteria($createIfNull=true) {
+		if($this->_c===null) {
+			if(($c=$this->defaultScope())!==array() || $createIfNull)
+				$this->_c=new DbCriteria($c);
+		}
+		return $this->_c;
+	}
+	
+	/**
+	 * 设置查询条件
+	 * @param DbCriteria $criteria
+	 * @return void
+	 */
+	public function setDbCriteria($criteria) {
+		$this->_c=$criteria;
 	}
 	
 	/**
@@ -162,26 +209,10 @@ abstract class Table extends \ci_ext\events\EventDispatcher {
 	}
 	
 	/**
-	 * 验证规则
-	 * @return array
-	 */
-	public function rules() {
-		return array();
-	}
-	
-	/**
 	 * 模型关系
 	 * @return array
 	 */
 	public function relations() {
-		return array();
-	}
-	
-	/**
-	 * 预装载的behaviors
-	 * @return array
-	 */
-	public function behaviors() {
 		return array();
 	}
 	
@@ -199,12 +230,11 @@ abstract class Table extends \ci_ext\events\EventDispatcher {
 	 * @param array $attributes
 	 * @return boolean
 	 */
-	public function save($attributes=array()) {
-		if($this->getIsNewRecord()) {
-			return $this->insert($attributes);
-		} else {
-			return $this->update($attributes);
-		}
+	public function save($runValidation=true,$attributes=null) {
+		if(!$runValidation || $this->validate($attributes))
+			return $this->getIsNewRecord() ? $this->insert($attributes) : $this->update($attributes);
+		else
+			return false;
 	}
 	
 	/**
@@ -478,6 +508,7 @@ abstract class Table extends \ci_ext\events\EventDispatcher {
 	 * @return Object
 	 */
 	public function findBySql($sql,$params=array()) {
+		$this->beforeFind();
 		$command=$this->getCommandBuilder()->createSqlCommand($sql,$params);
 		$result = $this->getDbConnection()->query($sql)->result('array');
 		return $this->populateRecord($result?$result[0]:false);
@@ -504,6 +535,7 @@ abstract class Table extends \ci_ext\events\EventDispatcher {
 	public function count($condition='',$params=array()) {
 		$builder=$this->getCommandBuilder();
 		$criteria=$builder->createCriteria($condition,$params);
+		$this->applyScopes($criteria);
 		$sql = $builder->createCountCommand($this->tableName(),$criteria);
 		$result = $this->getDbConnection()->query($sql)->result('array');
 		return reset($result[0]);
@@ -520,6 +552,7 @@ abstract class Table extends \ci_ext\events\EventDispatcher {
 		$prefix=$this->getTableAlias(true).'.';
 		$builder=$this->getCommandBuilder();
 		$criteria=$builder->createColumnCriteria($this->tableName(),$attributes,$condition,$params,$prefix);
+		$this->applyScopes($criteria);
 		$sql = $builder->createCountCommand($this->tableName(),$criteria);
 		$result = $this->getDbConnection()->query($sql)->result('array');
 		return reset($result[0]);
@@ -548,6 +581,7 @@ abstract class Table extends \ci_ext\events\EventDispatcher {
 		$criteria=$builder->createCriteria($condition,$params);
 		$criteria->select='1';
 		$criteria->limit=1;
+		$this->applyScopes($criteria);
 		$sql = $builder->createFindCommand($this->tableName(),$criteria);
 		$result = $this->getDbConnection()->query($sql)->result('array');
 		return !empty($result);
@@ -561,6 +595,7 @@ abstract class Table extends \ci_ext\events\EventDispatcher {
 	 */
 	protected function query($criteria,$all=false) {
 		$this->beforeFind();
+		$this->applyScopes($criteria);
 		if(!$all) {
 			$criteria->limit=1;
 		}
@@ -568,6 +603,45 @@ abstract class Table extends \ci_ext\events\EventDispatcher {
 		$result = $this->getDbConnection()->query($sql)->result('array');
 		return $all ? $this->populateRecords($result,true,$criteria->index) : $this->populateRecord($result?$result[0]:false);
 	}
+	
+	/**
+	 * 应用查询组合
+	 * @param DbCriteria $criteria
+	 * @return void
+	 */
+	public function applyScopes(&$criteria) {
+		if (! empty ( $criteria->scopes )) {
+			$scs = $this->scopes ();
+			$c = $this->getDbCriteria ();
+			foreach ( ( array ) $criteria->scopes as $k => $v ) {
+				if (is_integer ( $k )) {
+					if (is_string ( $v )) {
+						if (isset ( $scs [$v] )) {
+							$c->mergeWith ( $scs [$v], true );
+							continue;
+						}
+						$scope = $v;
+						$params = array ();
+					} else if (is_array ( $v )) {
+						$scope = key ( $v );
+						$params = current ( $v );
+					}
+				} else if (is_string ( $k )) {
+					$scope = $k;
+					$params = $v;
+				}
+				
+				call_user_func_array ( array ($this, $scope ), ( array ) $params );
+			}
+		}
+		
+		if (isset ( $c ) || ($c = $this->getDbCriteria ( false )) !== null) {
+			$c->mergeWith ( $criteria );
+			$criteria = $c;
+			$this->resetScope ( false );
+		}
+	}
+	
 	
 	/**
 	 * 实例化，此处用于多态，一般情况下无需覆盖
@@ -595,7 +669,7 @@ abstract class Table extends \ci_ext\events\EventDispatcher {
 			foreach($attributes as $name=>$value) {
 				if(property_exists($record,$name)) {
 					$record->$name=$value;
-				} else if(isset($this->_attributes[$name])) {
+				} else {
 					$record->_attributes[$name]=$value;
 				}
 			}
@@ -653,7 +727,7 @@ abstract class Table extends \ci_ext\events\EventDispatcher {
 	 * @return CommandBuilder
 	 */
 	public function getCommandBuilder() {
-		return new CommandBuilder();
+		return new DbCommandBuilder();
 	}
 	
 	/**
@@ -694,13 +768,12 @@ abstract class Table extends \ci_ext\events\EventDispatcher {
 	 * @see ci_ext\core.Object::__get()
 	 */
 	public function __get($key) {
-		$CI =& get_instance();
-		if(property_exists($CI, $key)) {
-			return $CI->$key;
-		} else if(isset($this->_attributes[$key])) {
+		if(parent::__isset($key)) {
+			return parent::__get($key);
+		} else if(isset($this->_attributes[$key])){
 			return $this->_attributes[$key];
 		} else {
-			return parent::__get($key);
+			return null;
 		}
 	}
 	
@@ -711,12 +784,22 @@ abstract class Table extends \ci_ext\events\EventDispatcher {
 	public function __set($key, $value) {
 		if(parent::__isset($key)) {
 			parent::__set($key, $value);
-		} else if(isset($this->_attributes[$key])) {
-			$this->_attributes[$key] = $value;
 		} else {
-			parent::__set($key, $value);
+			$this->_attributes[$key] = $value;
 		}
-		
+	}
+	
+	/**
+	 * 实现了调用scope的方法
+	 * @see ci_ext\events.EventDispatcher::__call()
+	 */
+	public function __call($name,$parameters) {
+		$scopes=$this->scopes();
+		if(isset($scopes[$name])) {
+			$this->getDbCriteria()->mergeWith($scopes[$name]);
+			return $this;
+		}
+		return parent::__call($name,$parameters);
 	}
 	
 	/**
@@ -739,28 +822,6 @@ abstract class Table extends \ci_ext\events\EventDispatcher {
 	 */
 	protected function afterSave() {
 		$this->dispatchEvent(TableEvent::AFTER_SAVE, new Event($this));
-	}
-	
-	/**
-	 * 触发事件beforeValidate
-	 * @return boolean
-	 */
-	protected function beforeValidate() {
-		if($this->hasEventListener(TableEvent::BEFORE_VALIDATE)) {
-			$event = new TableEvent($this);
-			$this->dispatchEvent(TableEvent::BEFORE_VALIDATE, $event);
-			return $event->isValid;
-		} else {
-			return true;
-		}
-	}
-	
-	/**
-	 * 触发事件afterValidate
-	 * @return void
-	 */
-	protected function afterValidate() {
-		$this->dispatchEvent(TableEvent::AFTER_VALIDATE, new Event($this));
 	}
 	
 	/**
@@ -799,14 +860,6 @@ abstract class Table extends \ci_ext\events\EventDispatcher {
 	 */
 	protected function afterFind() {
 		$this->dispatchEvent(TableEvent::AFTER_FIND, new Event($this));
-	}
-	
-	/**
-	 * 触发事件afterConstruct
-	 * @return void
-	 */
-	protected function afterConstruct() {
-		$this->dispatchEvent(Event::AFTER_CONSTRUCT, new Event($this));
 	}
 	
 	
