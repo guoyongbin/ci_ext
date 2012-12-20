@@ -1,17 +1,6 @@
 <?php
 namespace ci_ext\db;
 use ci_ext\db\DbException;
-/**
- * CommandBuilder
- * ==============================================
- * File encoding: UTF-8 
- * ----------------------------------------------
- * DbCommandBuilder.php
- * ==============================================
- * @author YangDongqi <yangdongqi@gmail.com>
- * @copyright Copyright &copy; 2006-2012 Hayzone IT LTD.
- * @version $id$
- */
 class DbCommandBuilder extends \ci_ext\core\Object {
 	
 	const PARAM_PREFIX=':cip';
@@ -45,11 +34,11 @@ class DbCommandBuilder extends \ci_ext\core\Object {
 	}
 	
 	public function getPrimaryKey($table) {
-		return $this->getDbConnection()->primary($table);
+		return $table->primaryKey();
 	}
 	
 	public function getTableRawName($table) {
-		return "`$table`";
+		return $this->quoteTableName($table->tableName());
 	}
 	
 	public function quoteValue($value) {
@@ -434,7 +423,7 @@ class DbCommandBuilder extends \ci_ext\core\Object {
 	}
 	
 	protected function ensureTable($table) {
-		$tables = $this->getDbConnection()->list_tables();
+		//$tables = $this->getDbConnection()->list_tables();
 		/*if(!in_array($table, $tables)) {
 			throw new DbException('yii','Table "'.$table.'" does not exist.');
 		}*/
